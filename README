@@ -23,11 +23,14 @@ It has the following features:
 USAGE
 ----------
 
-nsproxy [-H] [-s <server>] [-p <port>] [-d <dns>] [-v|-q] <command>
+nsproxy [-H] [-s <server>] [-p <port>] [-u <username>] [-P <password>] [-d <dns>] [-v|-q] <command>
 
 Examples:
   # Use socks5 proxy
   nsproxy dig example.com A
+
+  # Use socks5 proxy with authentication
+  nsproxy -u myuser -P mypass dig example.com A
 
   # Use http proxy
   nsproxy -H curl example.com
@@ -47,6 +50,14 @@ Options:
     Proxy server port.
     Default value is "1080" for socks, "8080" for http
 
+  -u <username>
+    SOCKS5 authentication username.
+    Must be used together with -P <password>.
+
+  -P <password>
+    SOCKS5 authentication password.
+    Must be used together with -u <username>.
+
   -d <dns>
     DNS redirect, allow following options:
       -d off
@@ -63,6 +74,27 @@ Options:
   -q
     Be quiet.
 
+
+BUILDING
+----------
+
+### From Source
+
+```bash
+mkdir build && cd build
+cmake ..
+make
+```
+
+### Download Pre-built Binaries
+
+For Linux x86_64 and ARM64, you can download pre-built binaries from the [Releases page](https://github.com/nalanzeyu/nsproxy/releases).
+
+Available packages:
+- `nsproxy-ubuntu22.04-x86_64.tar.gz` - Ubuntu 22.04 (Jammy) x86_64
+- `nsproxy-ubuntu22.04-arm64.tar.gz` - Ubuntu 22.04 (Jammy) ARM64
+- `nsproxy-linux-static-x86_64.tar.gz` - Static linked x86_64 binary
+- `nsproxy-linux-static-arm64.tar.gz` - Static linked ARM64 binary
 
 LIMITATIONS
 ----------
@@ -84,7 +116,7 @@ not referenced to the host, they are referenced to the inside of the namespace.
 TODO
 ----------
 
- - HTTP / SOCKS authentication
+ - HTTP authentication
  - IPv6
  - fullcone NAT
 

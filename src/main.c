@@ -24,8 +24,8 @@ int nsproxy_verbose_level__ = 0;
 static void print_help(void)
 {
     printf("usage: \n"
-           "  nsproxy [-H] [-s <server>] [-p <port>] [-d <dns>] [-v|-q] "
-           "<command>\n"
+           "  nsproxy [-H] [-s <server>] [-p <port>] [-u <username>] [-P "
+           "<password>] [-d <dns>] [-v|-q] <command>\n"
            "options:\n"
            "  -H\n"
            "    Use http proxy, not socks5.\n"
@@ -33,6 +33,10 @@ static void print_help(void)
            "    Proxy server address.\n"
            "  -p <port>\n"
            "    Proxy server port.\n"
+           "  -u <username>\n"
+           "    SOCKS5 authentication username.\n"
+           "  -P <password>\n"
+           "    SOCKS5 authentication password.\n"
            "  -d <dns>\n"
            "    DNS redirect, allow following options:\n"
            "      -d off\n"
@@ -515,7 +519,7 @@ int main(int argc, char *argv[])
         exit(EXIT_SUCCESS);
     }
 
-    while ((opt = getopt(argc, argv, "+HDs:p:d:qv")) != -1) {
+    while ((opt = getopt(argc, argv, "+HDs:p:u:P:d:qv")) != -1) {
         switch (opt) {
         case 'H':
             ishttp = 1;
@@ -528,6 +532,14 @@ int main(int argc, char *argv[])
             break;
         case 'p':
             port = optarg;
+            break;
+        case 'u':
+            strncpy(conf.username, optarg, sizeof(conf.username) - 1);
+            conf.username[sizeof(conf.username) - 1] = '\0';
+            break;
+        case 'P':
+            strncpy(conf.password, optarg, sizeof(conf.password) - 1);
+            conf.password[sizeof(conf.password) - 1] = '\0';
             break;
         case 'd':
             dns = optarg;
@@ -548,6 +560,15 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* validate authentication credentials */
+    if ((strlen(conf.username) > 0 && strlen(conf.password) == 0) ||
+        (strlen(conf.username) == 0 && strlen(conf.password) > 0)) {
+        fprintf(stderr,
+                "nsproxy: both username and password must be provided for SOCKS5 "
+                "authentication.\n");
+        exit(EXIT_FAILURE);
+    }
+
     if (serv == NULL)
         serv = "127.0.0.1";
 
@@ -562,8 +583,18 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     } else if (ishttp) {
         conf.proxytype = PROXY_HTTP;
+        if (strlen(conf.username) > 0) {
+            fprintf(stderr, "nsproxy: HTTP proxy does not support authentication. "
+                            "Use SOCKS5 proxy instead.\n");
+            exit(EXIT_FAILURE);
+        }
     } else if (isdirect) {
         conf.proxytype = PROXY_DIRECT;
+        if (strlen(conf.username) > 0) {
+            fprintf(stderr,
+                    "nsproxy: authentication is not applicable in direct mode.\n");
+            exit(EXIT_FAILURE);
+        }
     } else {
         conf.proxytype = PROXY_SOCKS5;
     }

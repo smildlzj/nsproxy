@@ -1,5 +1,4 @@
 /build/
-/.*/
 
 *.o
 *.out
@@ -10,3 +9,4 @@
 
 perf.data
 perf.data.old
+/.claude/settings.local.json

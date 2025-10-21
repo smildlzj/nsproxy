@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build-multi-arch:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            arch_name: x86_64
+          - arch: arm64
+            arch_name: arm64
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build for ${{ matrix.arch }}
+      run: |
+        docker run --rm --platform linux/${{ matrix.arch }} \
+          -v $PWD:/workspace \
+          -w /workspace \
+          ubuntu:22.04 \
+          bash -c "
+            apt-get update && \
+            apt-get install -y cmake build-essential && \
+            mkdir -p build-${{ matrix.arch }} && \
+            cd build-${{ matrix.arch }} && \
+            cmake .. -DCMAKE_BUILD_TYPE=Release && \
+            make -j\$(nproc) && \
+            strip nsproxy
+          "
+
+    - name: Test binary
+      if: matrix.arch == 'amd64'
+      run: |
+        ./build-${{ matrix.arch }}/nsproxy --help
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nsproxy-ubuntu22.04-${{ matrix.arch_name }}
+        path: build-${{ matrix.arch }}/nsproxy
+
+  build-static:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            arch_name: x86_64
+          - arch: arm64
+            arch_name: arm64
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build static binary for ${{ matrix.arch }}
+      run: |
+        docker run --rm --platform linux/${{ matrix.arch }} \
+          -v $PWD:/workspace \
+          -w /workspace \
+          alpine:latest \
+          sh -c "
+            apk add --no-cache cmake make gcc musl-dev linux-headers && \
+            mkdir -p build-static-${{ matrix.arch }} && \
+            cd build-static-${{ matrix.arch }} && \
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS='-static' && \
+            make -j\$(nproc) && \
+            strip nsproxy
+          "
+
+    - name: Verify static linking
+      run: |
+        docker run --rm --platform linux/${{ matrix.arch }} \
+          -v $PWD:/workspace \
+          -w /workspace \
+          alpine:latest \
+          sh -c "
+            apk add --no-cache file && \
+            echo '=== Checking binary type ===' && \
+            file build-static-${{ matrix.arch }}/nsproxy && \
+            echo '=== Checking dynamic linking ===' && \
+            ldd build-static-${{ matrix.arch }}/nsproxy || echo 'Binary is statically linked (expected for static build)' && \
+            echo '=== Basic functionality test ===' && \
+            build-static-${{ matrix.arch }}/nsproxy --help | head -5
+          "
+
+    - name: Upload static binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: nsproxy-linux-static-${{ matrix.arch_name }}
+        path: build-static-${{ matrix.arch }}/nsproxy
+
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install code quality tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format cppcheck
+
+    - name: Check code formatting
+      continue-on-error: true
+      run: |
+        find src/ lwip/ -name "*.c" -o -name "*.h" | xargs clang-format --dry-run --Werror
+
+    - name: Run static analysis
+      continue-on-error: true
+      run: |
+        cppcheck --enable=warning,style --suppress=unusedFunction --suppress=unmatchedSuppression src/

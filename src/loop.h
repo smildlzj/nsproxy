@@ -21,6 +21,8 @@ struct loopconf {
     uint8_t proxytype;
     char dnssrv[128];
     uint8_t dnstype;
+    char username[256];
+    char password[256];
 };
 
 void loop_init(struct loopctx **loop, struct loopconf *conf, int tunfd,

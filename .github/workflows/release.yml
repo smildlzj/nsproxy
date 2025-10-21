@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            arch_name: x86_64
+          - arch: arm64
+            arch_name: arm64
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build for ${{ matrix.arch }}
+      run: |
+        docker run --rm --platform linux/${{ matrix.arch }} \
+          -v $PWD:/workspace \
+          -w /workspace \
+          ubuntu:22.04 \
+          bash -c "
+            apt-get update && \
+            apt-get install -y cmake build-essential && \
+            mkdir -p build-${{ matrix.arch }} && \
+            cd build-${{ matrix.arch }} && \
+            cmake .. -DCMAKE_BUILD_TYPE=Release && \
+            make -j\$(nproc) && \
+            strip nsproxy && \
+            tar czf nsproxy-ubuntu22.04-${{ matrix.arch_name }}.tar.gz nsproxy && \
+            sha256sum nsproxy-ubuntu22.04-${{ matrix.arch_name }}.tar.gz > nsproxy-ubuntu22.04-${{ matrix.arch_name }}.tar.gz.sha256 && \
+            chown -R $(id -u):$(id -g) .
+          "
+
+    - name: Upload Release Asset
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release upload ${{ github.event.release.tag_name }} \
+          ./build-${{ matrix.arch }}/nsproxy-ubuntu22.04-${{ matrix.arch_name }}.tar.gz \
+          ./build-${{ matrix.arch }}/nsproxy-ubuntu22.04-${{ matrix.arch_name }}.tar.gz.sha256 \
+          --repo ${{ github.repository }}
+
+  build-static:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            arch_name: x86_64
+          - arch: arm64
+            arch_name: arm64
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build static binary for ${{ matrix.arch }}
+      run: |
+        docker run --rm --platform linux/${{ matrix.arch }} \
+          -v $PWD:/workspace \
+          -w /workspace \
+          alpine:latest \
+          sh -c "
+            apk add --no-cache cmake make gcc musl-dev linux-headers file && \
+            mkdir -p build-static-${{ matrix.arch }} && \
+            cd build-static-${{ matrix.arch }} && \
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS='-static' && \
+            make -j\$(nproc) && \
+            strip nsproxy && \
+            ldd nsproxy || echo 'Binary is statically linked' && \
+            file nsproxy && \
+            tar czf nsproxy-linux-static-${{ matrix.arch_name }}.tar.gz nsproxy && \
+            sha256sum nsproxy-linux-static-${{ matrix.arch_name }}.tar.gz > nsproxy-linux-static-${{ matrix.arch_name }}.tar.gz.sha256 && \
+            chown -R $(id -u):$(id -g) .
+          "
+
+    - name: Upload Static Binary
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release upload ${{ github.event.release.tag_name }} \
+          ./build-static-${{ matrix.arch }}/nsproxy-linux-static-${{ matrix.arch_name }}.tar.gz \
+          ./build-static-${{ matrix.arch }}/nsproxy-linux-static-${{ matrix.arch_name }}.tar.gz.sha256 \
+          --repo ${{ github.repository }}

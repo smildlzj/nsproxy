@@ -358,11 +358,131 @@ void socks_handshake_phase_3(struct ep_poller *poller, unsigned int event)
 }
 
 /* epoll event callback
+   used of receiving username/password authentication result */
+void socks_handshake_phase_2b(struct ep_poller *poller, unsigned int event)
+{
+    struct conn_socks *self =
+        container_of(poller, struct conn_socks, io_poller);
+    ssize_t nread;
+
+    if (event & (EPOLLERR | EPOLLHUP)) {
+        self->userev(self->userp, EPOLLERR);
+        return;
+    }
+
+    if ((nread = recv(self->sfd, self->buffer + self->nbuffer,
+                      sizeof(self->buffer) - self->nbuffer, 0)) == -1) {
+        if (!is_ignored_skerr(errno)) {
+            perror("recv()");
+            abort();
+        }
+        return;
+    }
+    self->nbuffer += nread;
+
+    /* authentication response should be 2 bytes: VER(1) STATUS */
+    if (self->nbuffer == 0 || self->nbuffer > 2) {
+        self->userev(self->userp, EPOLLERR);
+        return;
+    }
+
+    /* wait more data */
+    if (self->nbuffer != 2)
+        return;
+
+    /* check authentication result */
+    if (self->buffer[0] != 1 || self->buffer[1] != 0) {
+        loglv(0, "SOCKS5 authentication failed.");
+        self->userev(self->userp, EPOLLERR);
+        return;
+    }
+
+    loglv(1, "SOCKS5 authentication successful.");
+
+    /* good, authentication successful, proceed to connection request */
+    self->nbuffer = 0;
+    self->io_poller_ev.events = EPOLLOUT;
+    self->io_poller.on_epoll_event = &socks_handshake_phase_3;
+    if (epoll_ctl(loop_epfd(self->loop), EPOLL_CTL_MOD, self->sfd,
+                  &self->io_poller_ev) == -1) {
+        perror("epoll_ctl()");
+        abort();
+    }
+}
+
+/* epoll event callback
+   used of sending username/password authentication */
+void socks_handshake_phase_2a(struct ep_poller *poller, unsigned int event)
+{
+    struct conn_socks *self =
+        container_of(poller, struct conn_socks, io_poller);
+    struct loopconf *conf = loop_conf(self->loop);
+    ssize_t nsent;
+
+    if (event & (EPOLLERR | EPOLLHUP)) {
+        self->userev(self->userp, EPOLLERR);
+        return;
+    }
+
+    /* it's first called to this function, assembly authentication request */
+    if (self->nbuffer == 0) {
+        size_t ulen = strlen(conf->username);
+        size_t plen = strlen(conf->password);
+
+        /* RFC 1929: VER(1) ULEN USERNAME PLEN PASSWORD */
+        if (ulen == 0 || ulen > 255 || plen == 0 || plen > 255) {
+            loglv(0, "Invalid username or password length.");
+            self->userev(self->userp, EPOLLERR);
+            return;
+        }
+
+        if (sizeof(self->buffer) < 3 + ulen + plen) {
+            self->userev(self->userp, EPOLLERR);
+            return;
+        }
+
+        self->buffer[self->nbuffer++] = 1; /* auth version */
+        self->buffer[self->nbuffer++] = (uint8_t)ulen;
+        memcpy(self->buffer + self->nbuffer, conf->username, ulen);
+        self->nbuffer += ulen;
+        self->buffer[self->nbuffer++] = (uint8_t)plen;
+        memcpy(self->buffer + self->nbuffer, conf->password, plen);
+        self->nbuffer += plen;
+    }
+
+    if ((nsent = send(self->sfd, self->buffer, self->nbuffer, MSG_NOSIGNAL)) ==
+        -1) {
+        if (!is_ignored_skerr(errno)) {
+            perror("send()");
+            abort();
+        }
+        return;
+    }
+    self->nbuffer -= nsent;
+
+    /* partial write, wait next time to write rest */
+    if (self->nbuffer != 0) {
+        memmove(self->buffer, self->buffer + nsent, self->nbuffer);
+        return;
+    }
+
+    /* good, authentication request has been sent */
+    self->io_poller_ev.events = EPOLLIN;
+    self->io_poller.on_epoll_event = &socks_handshake_phase_2b;
+    if (epoll_ctl(loop_epfd(self->loop), EPOLL_CTL_MOD, self->sfd,
+                  &self->io_poller_ev) == -1) {
+        perror("epoll_ctl()");
+        abort();
+    }
+}
+
+/* epoll event callback
    used of receiving socks handshake method */
 void socks_handshake_phase_2(struct ep_poller *poller, unsigned int event)
 {
     struct conn_socks *self =
         container_of(poller, struct conn_socks, io_poller);
+    struct loopconf *conf = loop_conf(self->loop);
     ssize_t nread;
 
     if (event & (EPOLLERR | EPOLLHUP)) {
@@ -392,19 +512,46 @@ void socks_handshake_phase_2(struct ep_poller *poller, unsigned int event)
     if (self->nbuffer != 2)
         return;
 
-    if (self->buffer[0] != 5 || self->buffer[1] != 0) {
+    if (self->buffer[0] != 5) {
         self->userev(self->userp, EPOLLERR);
         return;
     }
 
-    /* good, server replied correctly */
-    self->nbuffer = 0;
-    self->io_poller_ev.events = EPOLLOUT;
-    self->io_poller.on_epoll_event = &socks_handshake_phase_3;
-    if (epoll_ctl(loop_epfd(self->loop), EPOLL_CTL_MOD, self->sfd,
-                  &self->io_poller_ev) == -1) {
-        perror("epoll_ctl()");
-        abort();
+    /* check selected method */
+    if (self->buffer[1] == 0) {
+        /* no authentication required */
+        loglv(1, "SOCKS5 server selected: no authentication.");
+        self->nbuffer = 0;
+        self->io_poller_ev.events = EPOLLOUT;
+        self->io_poller.on_epoll_event = &socks_handshake_phase_3;
+        if (epoll_ctl(loop_epfd(self->loop), EPOLL_CTL_MOD, self->sfd,
+                      &self->io_poller_ev) == -1) {
+            perror("epoll_ctl()");
+            abort();
+        }
+    } else if (self->buffer[1] == 2) {
+        /* username/password authentication required */
+        loglv(1, "SOCKS5 server selected: username/password authentication.");
+        if (strlen(conf->username) == 0 || strlen(conf->password) == 0) {
+            loglv(0, "SOCKS5 server requires authentication but no credentials "
+                     "provided.");
+            self->userev(self->userp, EPOLLERR);
+            return;
+        }
+        self->nbuffer = 0;
+        self->io_poller_ev.events = EPOLLOUT;
+        self->io_poller.on_epoll_event = &socks_handshake_phase_2a;
+        if (epoll_ctl(loop_epfd(self->loop), EPOLL_CTL_MOD, self->sfd,
+                      &self->io_poller_ev) == -1) {
+            perror("epoll_ctl()");
+            abort();
+        }
+    } else {
+        /* unsupported method */
+        loglv(0, "SOCKS5 server selected unsupported method: %u",
+              (unsigned)self->buffer[1]);
+        self->userev(self->userp, EPOLLERR);
+        return;
     }
 }
 
@@ -414,6 +561,7 @@ void socks_handshake_phase_1(struct ep_poller *poller, unsigned int event)
 {
     struct conn_socks *self =
         container_of(poller, struct conn_socks, io_poller);
+    struct loopconf *conf = loop_conf(self->loop);
     ssize_t nsent;
 
     if (event & (EPOLLERR | EPOLLHUP)) {
@@ -423,14 +571,25 @@ void socks_handshake_phase_1(struct ep_poller *poller, unsigned int event)
 
     /* it's first called to this function, assembly request */
     if (self->nbuffer == 0) {
-        if (sizeof(self->buffer) < 3) {
+        int has_auth = (strlen(conf->username) > 0 && strlen(conf->password) > 0);
+
+        if (sizeof(self->buffer) < 4) {
             self->userev(self->userp, EPOLLERR);
             return;
         }
-        /* current only support no auth */
+
         self->buffer[self->nbuffer++] = 5; /* ver */
-        self->buffer[self->nbuffer++] = 1; /* num */
-        self->buffer[self->nbuffer++] = 0; /* no auth */
+
+        if (has_auth) {
+            /* support both no auth and username/password auth */
+            self->buffer[self->nbuffer++] = 2; /* num of methods */
+            self->buffer[self->nbuffer++] = 0; /* method: no auth */
+            self->buffer[self->nbuffer++] = 2; /* method: username/password */
+        } else {
+            /* only support no auth */
+            self->buffer[self->nbuffer++] = 1; /* num of methods */
+            self->buffer[self->nbuffer++] = 0; /* method: no auth */
+        }
     }
 
     if ((nsent = send(self->sfd, self->buffer, self->nbuffer, MSG_NOSIGNAL)) ==
